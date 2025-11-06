@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>仕訳→転記 トレーナー v2（統合TSV1枚対応版）</title>
+  <style>
+    :root{--ink:#1f2937; --muted:#6b7280; --line:#e5e7eb; --ok:#e7f8e7; --warn:#fff8e7; --ng:#fdeaea}
+    *{box-sizing:border-box}
+    body{font-family:system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", Meiryo, sans-serif; margin:0; background:#fafafa; color:var(--ink)}
+    main{max-width:980px; margin:0 auto; padding:20px 16px 40px}
+    .card{background:#fff; border:1px solid var(--line); border-radius:14px; padding:14px 16px; box-shadow:0 1px 2px rgba(0,0,0,.04)}
+    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+    .muted{color:var(--muted)}
+    #problemLine{color:#111; font-weight:700}
+    select,input,button,textarea{border-radius:10px; border:1px solid var(--line); padding:8px 10px; font-size:14px; background:#fff}
+    button.primary{background:#111; color:#fff; border-color:#111}
+
+    /* T字勘定 */
+    .taccount{position:relative; margin:26px 4px; background:#fff; border-radius:8px; padding:0 8px 10px}
+    .taccount .title{font-weight:700; text-align:center; margin:0 0 6px}
+    .taccount .hline{border-top:1px solid #333; height:0; margin:0 8px}
+    .taccount .pane{position:relative; padding:10px 8px 0 8px}
+    .taccount .pane::before{content:""; position:absolute; top:0; bottom:0; left:50%; transform:translateX(-0.5px); width:1px; background:#333}
+    .cols{display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start}
+
+    /* 入力行（レスポンシブ） */
+    .entry{display:grid; grid-template-columns: minmax(7rem,1fr) minmax(72px,12ch); gap:8px; margin:0}
+    .entry input{height:40px; width:100%; min-width:0}
+    .money{text-align:right}
+
+    /* 学習モードのピル表示 */
+    .pill{background:#f8fafc; border:1px solid var(--line); border-radius:12px; padding:6px 10px; display:flex; justify-content:space-between; gap:16px; align-items:center; height:40px}
+    .pill .note{color:#374151}
+    .pill .amt{min-width:88px; text-align:right; font-variant-numeric:tabular-nums}
+
+    .ok{background:var(--ok)} .warn{background:var(--warn)} .ng{background:var(--ng)}
+    .feedback table{width:100%; border-collapse:collapse}
+    .feedback th, .feedback td{border:1px solid var(--line); padding:6px}
+    .feedback th{background:#f8fafc; text-align:left}
+
+    /* 仕訳表 */
+    .journal{margin:6px 0 12px}
+    .journal h4{margin:0 0 8px 0}
+    .journal table{width:100%; border-collapse:collapse; table-layout:fixed}
+    .journal th,.journal td{border:1px solid var(--line); padding:6px; vertical-align:middle}
+    .journal th{background:#f8fafc}
+    .journal td.right{text-align:right; font-variant-numeric:tabular-nums}
+    .journal .double{border-left:3px double #999 !important;}
+    .journal input{width:100%; min-width:0}
+
+    /* プロンプト出力 */
+    #aiPrompt{width:100%; min-height:180px}
+    .btn-row{display:flex; gap:8px; flex-wrap:wrap}
+
+    @media (max-width:640px){
+      .entry{grid-template-columns: minmax(6rem,1fr) minmax(68px,10ch)}
+      .pill .amt{min-width:68px}
+      .cols{gap:12px}
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card" style="margin-bottom:12px">
+      <div class="row">
+        <div>問題選択：</div>
+        <select id="problemSelect"></select>
+        <button id="btnPrev">前</button>
+        <button id="btnNext">次</button>
+        <button id="btnLoadCsv">TSVを読み込む</button>
+        <button id="btnTpl">TSVひな形</button>
+      </div>
+      <div id="problemLine" style="margin-top:8px"></div>
+      <input id="csvFile" type="file" accept=".tsv,.csv" style="display:none" />
+      <div class="row" style="margin-top:8px">
+        <button id="btnLearn">学習モード（正しい仕訳と転記を見る）</button>
+        <button id="btnHide">解説を閉じる</button>
+        <button id="btnReset">演習リセット</button>
+        <button id="btnGrade" class="primary">採点</button>
+        <div id="scoreAll" style="font-weight:700"></div>
+      </div>
+      <div class="muted" style="margin-top:6px">※ 入力は <strong>相手科目</strong> と <strong>金額</strong>（転記欄）。複合仕訳の摘要は「諸口」。同一フォルダに <code>problems_unified.tsv</code>（UTF-8+BOM, タブ区切り）があれば自動読込します。形式は <code>id\tp\tp\t問題文</code> と <code>id\t順番\t(d/c/借/貸)\t科目\t金額</code>。</div>
+    </section>
+
+    <section class="card" style="margin-bottom:12px">
+      <h3 style="margin:0 0 8px 0">① 仕訳の記入</h3>
+      <div id="journalPanel" class="journal"></div>
+      <div id="journalFeedback" class="feedback" style="margin-top:8px"></div>
+    </section>
+
+    <section class="card" style="margin-bottom:12px">
+      <h3 style="margin:0 0 8px 0">② 勘定別 T勘定（左右欄に記入）</h3>
+      <div id="ledger"></div>
+      <div id="learnPanel" style="margin-top:8px"></div>
+      <div id="ledgerFeedback" class="feedback" style="margin-top:8px"></div>
+    </section>
+
+    <section class="card">
+      <h3 style="margin:0 0 8px 0">③ AI 解説プロンプト</h3>
+      <div class="btn-row" style="margin-bottom:8px">
+        <button id="btnMakePrompt">採点結果から生成</button>
+        <button id="btnCopyPrompt">コピー</button>
+      </div>
+      <textarea id="aiPrompt" placeholder="採点後に［採点結果から生成］を押すとここにプロンプトが入ります"></textarea>
+    </section>
+  </main>
+
+<script>
+/********** 既定データ（統合TSVが無いときのフォールバック） **********/
+const DEFAULT_PROBLEMS = [
+  { id:"J2-0001", text:"仕入1,000円を当座預金300円支払い、残りは買掛金とした。",
+    lines:[{side:'D',acc:'仕入',amt:1000},{side:'C',acc:'当座預金',amt:300},{side:'C',acc:'買掛金',amt:700}] },
+  { id:"J2-0002", text:"売掛金500円を現金で回収した。",
+    lines:[{side:'D',acc:'現金',amt:500},{side:'C',acc:'売掛金',amt:500}] },
+  { id:"J2-0003", text:"備品300円を現金100円と当座預金200円で支払った。",
+    lines:[{side:'D',acc:'備品',amt:300},{side:'C',acc:'現金',amt:100},{side:'C',acc:'当座預金',amt:200}] },
+  { id:"J2-0004", text:"商品を販売し、代金のうち現金300円を受け取り、残りは掛けとした（売上800円）。",
+    lines:[{side:'D',acc:'現金',amt:300},{side:'D',acc:'売掛金',amt:500},{side:'C',acc:'売上',amt:800}] }
+];
+let PROBLEMS = [...DEFAULT_PROBLEMS];
+
+/********** DOM refs **********/
+let $sel,$line,$ledger,$learn,$ledgerFb,$journalPanel,$journalFb,$scoreAll,$btnLoadCsv,$btnTpl,$csvFile,$aiPrompt;
+
+/********** Utils **********/
+function el(tag, attrs={}, html=""){ const n=document.createElement(tag); for(const [k,v] of Object.entries(attrs)) n.setAttribute(k,v); n.innerHTML=html; return n; }
+function fmtMoney(n){ return (Number(n)||0).toLocaleString('ja-JP'); }
+function attachCommaHandlers(inp){ inp.addEventListener('focus',()=>{ inp.value=inp.value.replace(/,/g,''); }); inp.addEventListener('blur',()=>{ const raw=inp.value.replace(/,/g,''); if(raw===''){inp.value='';return;} const x=Number(raw); if(!isNaN(x)) inp.value=fmtMoney(x); }); }
+function normAcc(s){ return (s||'').trim(); }
+
+/********** 正答の転記（諸口ロジック） **********/
+function expandToLedgerEntries(p){
+  const deb=p.lines.filter(x=>x.side==='D');
+  const cre=p.lines.filter(x=>x.side==='C');
+  const out=[];
+  deb.forEach(d=>{ const note=cre.length>=2?'諸口':cre[0].acc; out.push({acc:d.acc, side:'D', amt:+d.amt, note}); });
+  cre.forEach(c=>{ const note=deb.length>=2?'諸口':deb[0].acc; out.push({acc:c.acc, side:'C', amt:+c.amt, note}); });
+  return out;
+}
+
+/********** 仕訳欄の生成・読取 **********/
+function buildJournal(p){
+  const deb=p.lines.filter(x=>x.side==='D');
+  const cre=p.lines.filter(x=>x.side==='C');
+  const maxRows=Math.max(deb.length, cre.length);
+  let rows='';
+  for(let i=0;i<maxRows;i++){
+    rows+=`<tr>
+      <td><input type="text" data-side="D" data-idx="${i}" placeholder="借方科目"></td>
+      <td class="right"><input type="text" class="money" data-side="D" data-idx="${i}" inputmode="numeric" placeholder="金額"></td>
+      <td class="double"><input type="text" data-side="C" data-idx="${i}" placeholder="貸方科目"></td>
+      <td class="right"><input type="text" class="money" data-side="C" data-idx="${i}" inputmode="numeric" placeholder="金額"></td>
+    </tr>`;
+  }
+  $journalPanel.innerHTML = `<h4>仕訳表（行数は正答に合わせて自動）</h4>
+  <table>
+    <colgroup>
+      <col style="width:35%"><col style="width:15%"><col style="width:35%"><col style="width:15%">
+    </colgroup>
+    <thead><tr>
+      <th>借方科目</th><th>金額</th>
+      <th class='double'>貸方科目</th><th>金額</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+  $journalPanel.querySelectorAll('input.money').forEach(attachCommaHandlers);
+}
+
+function readJournal(){
+  const out=[];
+  $journalPanel.querySelectorAll('tbody tr').forEach(tr=>{
+    const [dAcc,dAmt,cAcc,cAmt]=tr.querySelectorAll('input');
+    const dAccVal=dAcc.value.trim(), dAmtVal=dAmt.value.replace(/,/g,'').trim();
+    const cAccVal=cAcc.value.trim(), cAmtVal=cAmt.value.replace(/,/g,'').trim();
+    if(dAccVal||dAmtVal){ out.push({side:'D',acc:dAccVal,amt:+(dAmtVal||0)}); }
+    if(cAccVal||cAmtVal){ out.push({side:'C',acc:cAccVal,amt:+(cAmtVal||0)}); }
+  });
+  return out;
+}
+
+/********** T勘定（UI生成・読取） **********/
+function buildOneAccount(acc){
+  const wrap=el('div',{class:'taccount'});
+  wrap.dataset.acc=acc;
+  wrap.appendChild(el('div',{class:'title'},acc));
+  wrap.appendChild(el('div',{class:'hline'}));
+  const pane=el('div',{class:'pane'});
+  const cols=el('div',{class:'cols'});
+  cols.appendChild(makeSide());
+  cols.appendChild(makeSide());
+  pane.appendChild(cols); wrap.appendChild(pane); return wrap;
+}
+function makeSide(){
+  const side=el('div');
+  const row=el('div',{class:'entry'});
+  const subj=el('input',{type:'text',placeholder:'相手科目'});
+  const money=el('input',{type:'text',inputmode:'numeric',placeholder:'金額',class:'money'});
+  attachCommaHandlers(money);
+  row.appendChild(subj); row.appendChild(money); side.appendChild(row); return side;
+}
+function buildLedger(p){
+  const accounts=[...new Set(expandToLedgerEntries(p).map(e=>e.acc))];
+  $ledger.innerHTML=''; accounts.forEach(acc=> $ledger.appendChild(buildOneAccount(acc)) );
+}
+function readStudentLedger(){
+  const out=[];
+  document.querySelectorAll('.taccount').forEach(accDiv=>{
+    const acc=accDiv.dataset.acc; const [L,R]=accDiv.querySelectorAll('.cols > div');
+    if(L){ L.querySelectorAll('.entry').forEach(e=>{ const [n,a]=e.querySelectorAll('input'); const raw=(a.value||'').replace(/,/g,''); if(n.value||raw) out.push({acc,side:'D',amt:+(raw||0),note:(n.value||'').trim()}); }); }
+    if(R){ R.querySelectorAll('.entry').forEach(e=>{ const [n,a]=e.querySelectorAll('input'); const raw=(a.value||'').replace(/,/g,''); if(n.value||raw) out.push({acc,side:'C',amt:+(raw||0),note:(n.value||'').trim()}); }); }
+  });
+  return out;
+}
+
+/********** 採点：仕訳・転記 **********/
+function matchJournal(student,correct){
+  const used=new Set(); let score=0; const N=correct.length; const details=[];
+  const pickNearest=(ce)=>{
+    let cand = student.find(se=>se.side===ce.side && normAcc(se.acc)===ce.acc) ||
+               student.find(se=>se.side===ce.side) ||
+               student.find(se=>normAcc(se.acc)===ce.acc);
+    return cand||null;
+  };
+  correct.forEach((ce,idx)=>{
+    const iFull=student.findIndex((se,i)=>!used.has(i)&&se.side===ce.side&&normAcc(se.acc)===ce.acc&&+se.amt===+ce.amt);
+    if(iFull>=0){ used.add(iFull); score+=100/N; details.push({idx,type:'完全一致',expect:ce,got:student[iFull],cls:'ok'}); return; }
+
+    const iSideAmt=student.findIndex((se,i)=>!used.has(i)&&se.side===ce.side&&+se.amt===+ce.amt);
+    if(iSideAmt>=0){ used.add(iSideAmt); score+=80/N; details.push({idx,type:'借貸・金額一致（科目違い）',expect:ce,got:student[iSideAmt],cls:'warn'}); return; }
+
+    const iAccAmt=student.findIndex((se,i)=>!used.has(i)&&normAcc(se.acc)===ce.acc&&+se.amt===+ce.amt&&se.side!==ce.side);
+    if(iAccAmt>=0){ used.add(iAccAmt); score+=70/N; details.push({idx,type:'科目・金額一致（借貸逆）',expect:ce,got:student[iAccAmt],cls:'warn'}); return; }
+
+    const iAmt=student.findIndex((se,i)=>!used.has(i)&&+se.amt===+ce.amt);
+    if(iAmt>=0){ used.add(iAmt); score+=60/N; details.push({idx,type:'金額のみ一致',expect:ce,got:student[iAmt],cls:'warn'}); return; }
+
+    details.push({idx,type:'誤り',expect:ce,got:pickNearest(ce),cls:'ng'});
+  });
+  return {score:Math.round(score),details};
+}
+
+function matchLedger(student,correct){
+  const used=new Set(); let score=0; const N=correct.length; const details=[];
+  const pickNearest=(ce)=>{
+    let cand = student.find(se=>se.acc===ce.acc && se.side===ce.side) ||
+               student.find(se=>se.acc===ce.acc) ||
+               student.find(se=>se.side===ce.side);
+    return cand||null;
+  };
+  correct.forEach((ce,idx)=>{
+    let k=student.findIndex((se,i)=>!used.has(i)&&se.acc===ce.acc&&se.side===ce.side&&+se.amt===+ce.amt&&(se.note||'')===(ce.note||''));
+    if(k>=0){ used.add(k); score+=100/N; details.push({idx,type:'完全一致',expect:ce,got:student[k],cls:'ok'}); return; }
+    k=student.findIndex((se,i)=>!used.has(i)&&se.acc===ce.acc&&se.side===ce.side&&+se.amt===+ce.amt);
+    if(k>=0){ used.add(k); score+=80/N; details.push({idx,type:'勘定・借貸・金額一致（相手科目違い）',expect:ce,got:student[k],cls:'warn'}); return; }
+    k=student.findIndex((se,i)=>!used.has(i)&&+se.amt===+ce.amt);
+    if(k>=0){ used.add(k); score+=60/N; details.push({idx,type:'金額のみ一致',expect:ce,got:student[k],cls:'warn'}); return; }
+    details.push({idx,type:'誤り',expect:ce,got:pickNearest(ce),cls:'ng'});
+  });
+  return {score:Math.round(score),details};
+}
+
+/********** 表示：学習モード・採点結果 **********/
+function renderLearn(problem){
+  const correct=expandToLedgerEntries(problem);
+  const accounts=[...new Set(correct.map(e=>e.acc))];
+  const wrap=document.createElement('div');
+
+  // 正しい仕訳
+  const voucher=document.createElement('div'); voucher.className='journal';
+  voucher.appendChild(el('h4',{},'正しい仕訳'));
+  const deb=problem.lines.filter(x=>x.side==='D');
+  const cre=problem.lines.filter(x=>x.side==='C');
+  const maxRows=Math.max(deb.length,cre.length);
+  let rows='';
+  for(let i=0;i<maxRows;i++){
+    const dl=deb[i]; const cr=cre[i];
+    rows+=`<tr>
+      <td>${dl?dl.acc:''}</td><td class="right">${dl?fmtMoney(dl.amt):''}</td>
+      <td class="double">${cr?cr.acc:''}</td><td class="right">${cr?fmtMoney(cr.amt):''}</td>
+    </tr>`;
+  }
+  voucher.innerHTML += `<table>
+    <thead><tr>
+      <th>借方科目</th><th>金額</th>
+      <th class='double'>貸方科目</th><th>金額</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+  wrap.appendChild(voucher);
+
+  // 正しい転記
+  wrap.appendChild(el('h4',{},'正しい転記（総勘定元帳）'));
+  accounts.forEach(acc=>{
+    const ta=document.createElement('div'); ta.className='taccount';
+    ta.appendChild(el('div',{class:'title'},acc));
+    ta.appendChild(el('div',{class:'hline'},''));
+    const pane=el('div',{class:'pane'}); const cols=el('div',{class:'cols'});
+    const left=el('div'); const right=el('div');
+    correct.filter(e=>e.acc===acc&&e.side==='D').forEach(e=> left.appendChild(el('div',{class:'pill'},`<span class='note'>${e.note}</span><span class='amt'>${fmtMoney(e.amt)}</span>`)) );
+    correct.filter(e=>e.acc===acc&&e.side==='C').forEach(e=> right.appendChild(el('div',{class:'pill'},`<span class='note'>${e.note}</span><span class='amt'>${fmtMoney(e.amt)}</span>`)) );
+    cols.appendChild(left); cols.appendChild(right); pane.appendChild(cols); ta.appendChild(pane); wrap.appendChild(ta);
+  });
+  $learn.innerHTML=''; $learn.appendChild(wrap);
+}
+
+function renderJournalFeedback(res){
+  const rows=res.details.map(d=>{ const e=d.expect; const g=d.got; const side=e.side==='D'?'借':'貸';
+    const gotTxt=g? `${g.side==='D'?'借':'貸'}:${g.acc}/${fmtMoney(g.amt)}` : '-';
+    return `<tr class="${d.cls}"><td>採点${d.idx+1}</td><td>${d.type}</td><td>${e.acc}</td><td>${side}</td><td style="text-align:right">${fmtMoney(e.amt)}</td><td>${gotTxt}</td></tr>`; }).join('');
+  $journalFb.innerHTML=`<h4>仕訳の採点結果（スコア：${res.score}点）</h4><table>
+    <thead><tr><th>項目</th><th>判定</th><th>正答科目</th><th>借貸</th><th style="text-align:right">正答金額</th><th>学生の入力</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function renderLedgerFeedback(res){
+  const rows=res.details.map(d=>{ const e=d.expect; const side=e.side==='D'?'借':'貸';
+    const gotTxt=d.got? `${d.got.side==='D'?'借':'貸'}:${d.got.note}/${fmtMoney(d.got.amt)}` : '-';
+    return `<tr class="${d.cls}"><td>採点${d.idx+1}</td><td>${d.type}</td><td>${e.acc}</td><td>${side}</td><td>${e.note}</td><td style="text-align:right">${fmtMoney(e.amt)}</td><td>${gotTxt}</td></tr>`; }).join('');
+  $ledgerFb.innerHTML=`<h4>転記の採点結果（スコア：${res.score}点）</h4><table>
+    <thead><tr><th>項目</th><th>判定</th><th>勘定</th><th>借貸</th><th>相手科目</th><th style="text-align:right">正答金額</th><th>学生の入力</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+/********** プロンプト生成 **********/
+function decideErrorFocus(jRes,lRes){
+  const jOk=jRes.score===100; const lOk=lRes.score===100;
+  if(jOk && !lOk) return '仕訳は正しいが、転記に誤りがある可能性が高い。相手科目や借貸の左右、金額の位置を確認させる。';
+  if(!jOk) return '仕訳段階に誤りがある可能性が高い。まず仕訳の考え方を復習させ、その後に転記へ進ませる。';
+  return '全体として正しい。確認の観点と定着のための追加練習を提案する。';
+}
+
+function summarizeJournalMistakes(details){
+  const msgs=[];
+  details.forEach(d=>{
+    if(d.type==='借貸・金額一致（科目違い）' && d.got){ msgs.push(`「${d.expect.acc}」とすべきところを「${d.got.acc}」と誤記`); }
+    if(d.type==='科目・金額一致（借貸逆）' && d.got){ msgs.push(`「${d.expect.acc}」の借貸が逆（${d.got.side==='D'?'借方':'貸方'}に記入）`); }
+    if(d.type==='金額のみ一致'){ msgs.push('金額は合っているが科目や借貸が異なる'); }
+    if(d.type==='誤り' && d.got){ msgs.push(`近い入力: ${d.got.side==='D'?'借':'貸'}:${d.got.acc}/${fmtMoney(d.got.amt)}`); }
+    if(d.type==='誤り' && !d.got){ msgs.push('該当行が見つからない（空欄または金額不一致）'); }
+  });
+  return [...new Set(msgs)].slice(0,6);
+}
+
+function summarizeLedgerMistakes(details){
+  const msgs=[];
+  details.forEach(d=>{
+    if(d.type==='勘定・借貸・金額一致（相手科目違い）' && d.got){ msgs.push(`${d.expect.acc}の相手科目が「${d.expect.note}」→「${d.got.note}」`); }
+    if(d.type==='金額のみ一致'){ msgs.push(`${d.expect.acc}の金額は一致するが相手科目や借貸が異なる`); }
+    if(d.type==='誤り' && d.got){ msgs.push(`近い入力: ${d.got.side==='D'?'借':'貸'}:${d.got.note}/${fmtMoney(d.got.amt)}`); }
+    if(d.type==='誤り' && !d.got){ msgs.push(`${d.expect.acc}の該当仕訳が見つからない（空欄または金額不一致）`); }
+  });
+  return [...new Set(msgs)].slice(0,6);
+}
+
+function generateAiPrompt(problem,jRes,lRes,studentJ,studentL){
+  const jMist=summarizeJournalMistakes(jRes.details);
+  const lMist=summarizeLedgerMistakes(lRes.details);
+  const focus=decideErrorFocus(jRes,lRes);
+
+  const fmtJL = (arr,mode)=>{
+    if(mode==='journal'){
+      const D=arr.filter(x=>x.side==='D'); const C=arr.filter(x=>x.side==='C');
+      const rows=Math.max(D.length,C.length);
+      let t=[]; for(let i=0;i<rows;i++){
+        const dl=D[i], cr=C[i];
+        t.push(`借:${dl?dl.acc:''} ${dl?fmtMoney(dl.amt):''}｜貸:${cr?cr.acc:''} ${cr?fmtMoney(cr.amt):''}`);
+      }
+      return t.join('\n');
+    }else{
+      return arr.map(e=> `${e.acc}（${e.side==='D'?'借':'貸'}） 相手:${e.note||''} 金額:${fmtMoney(e.amt)}`).join('\n');
+    }
+  };
+
+  const correctJ = fmtJL(problem.lines,'journal');
+  const correctL = fmtJL(expandToLedgerEntries(problem),'ledger');
+  const studentJtxt = fmtJL(studentJ,'journal') || '(未入力)';
+  const studentLtxt = fmtJL(studentL,'ledger') || '(未入力)';
+
+  return `以下の簿記練習の採点結果をもとに、学生への解説を作成してください。\n\n`+
+  `【問題】${problem.text}\n\n`+
+  `【学生の仕訳】\n${studentJtxt}\n\n`+
+  `【正しい仕訳】\n${correctJ}\n\n`+
+  `【仕訳採点結果（${jRes.score}点）】\n- ${jMist.join('\n- ') || '特記事項なし'}\n\n`+
+  `【学生の転記】\n${studentLtxt}\n\n`+
+  `【正しい転記】\n${correctL}\n\n`+
+  `【転記採点結果（${lRes.score}点）】\n- ${lMist.join('\n- ') || '特記事項なし'}\n\n`+
+  `👉 解説方針：${focus}\n`+
+  `👉 指示：\n`+
+  `- どのような勘違いがあったかを推測して説明する\n`+
+  `- 仕訳の誤りが転記にどう影響したか／仕訳は正しいが転記がなぜ誤ったかを説明する\n`+
+  `- 次に同じ問題が出たときに正しくできるよう、手順ベースで3〜5個の具体的アドバイスを与える`;
+}
+
+/********** UI初期化 **********/
+let idx=0; let lastJournalRes=null, lastLedgerRes=null;
+function rebuildSelect(){ $sel.innerHTML=''; PROBLEMS.forEach(p=> $sel.appendChild(el('option',{value:p.id},`${p.id}｜${p.text.slice(0,24)}…`)) ); }
+function load(i){ idx=(i+PROBLEMS.length)%PROBLEMS.length; const p=PROBLEMS[idx]; $line.textContent=`問題ID: ${p.id}　取引: ${p.text}`; $learn.innerHTML=''; $journalFb.innerHTML=''; $ledgerFb.innerHTML=''; $scoreAll.textContent=''; $aiPrompt.value=''; buildJournal(p); buildLedger(p); $sel.value=p.id; }
+
+function setupUI(){
+  rebuildSelect();
+  $sel.addEventListener('change',()=>{ const i=PROBLEMS.findIndex(p=>p.id===$sel.value); if(i>=0) load(i); });
+  document.getElementById('btnPrev').onclick=()=>load(idx-1);
+  document.getElementById('btnNext').onclick=()=>load(idx+1);
+  document.getElementById('btnLearn').onclick=()=>renderLearn(PROBLEMS[idx]);
+  document.getElementById('btnHide').onclick=()=>{ $learn.innerHTML=''; };
+  document.getElementById('btnReset').onclick=()=>load(idx);
+  document.getElementById('btnGrade').onclick=()=>{
+    const p=PROBLEMS[idx];
+    const jRes = matchJournal(readJournal(), p.lines);
+    const lRes = matchLedger(readStudentLedger(), expandToLedgerEntries(p));
+    lastJournalRes=jRes; lastLedgerRes=lRes;
+    renderJournalFeedback(jRes); renderLedgerFeedback(lRes);
+    $scoreAll.textContent=`総合： 仕訳 ${jRes.score} 点 ／ 転記 ${lRes.score} 点`;
+  };
+  document.getElementById('btnMakePrompt').onclick=()=>{
+    const p=PROBLEMS[idx];
+    const jRes = lastJournalRes || matchJournal(readJournal(), p.lines);
+    const lRes = lastLedgerRes || matchLedger(readStudentLedger(), expandToLedgerEntries(p));
+    $aiPrompt.value = generateAiPrompt(p, jRes, lRes, readJournal(), readStudentLedger());
+  };
+  document.getElementById('btnCopyPrompt').onclick=async()=>{
+    try{ await navigator.clipboard.writeText($aiPrompt.value||''); alert('プロンプトをコピーしました'); }catch(e){ alert('コピーに失敗しました'); }
+  };
+
+  // TSV 読込（ローカル、統合1枚）
+  $btnLoadCsv.onclick=()=> $csvFile.click();
+  $csvFile.onchange=async(e)=>{ const f=(e.target.files||[])[0]; if(!f) return; const text=await f.text(); if(!isUnifiedTsv(text)){ alert('統合TSVの形式ではありません（id, p, p, 問題文／id, order, side, acc, amt）'); e.target.value=''; return; } const parsed=parseUnifiedTsv(text); if(parsed&&parsed.length){ PROBLEMS=parsed; rebuildSelect(); load(0); } else { alert('TSVの内容を解釈できませんでした'); } e.target.value=''; };
+
+  // テンプレDL（統合1枚）
+  $btnTpl.onclick=()=>{ const blob=new Blob(['\uFEFF'+unifiedTsvTemplate()],{type:'text/tab-separated-values;charset=utf-8'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='problems_unified_template.tsv'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1200); };
+}
+
+function init(){
+  $sel=document.getElementById('problemSelect');
+  $line=document.getElementById('problemLine');
+  $ledger=document.getElementById('ledger');
+  $learn=document.getElementById('learnPanel');
+  $ledgerFb=document.getElementById('ledgerFeedback');
+  $journalPanel=document.getElementById('journalPanel');
+  $journalFb=document.getElementById('journalFeedback');
+  $scoreAll=document.getElementById('scoreAll');
+  $btnLoadCsv=document.getElementById('btnLoadCsv');
+  $btnTpl=document.getElementById('btnTpl');
+  $csvFile=document.getElementById('csvFile');
+  $aiPrompt=document.getElementById('aiPrompt');
+  if([$sel,$line,$ledger,$learn,$ledgerFb,$journalPanel,$journalFb,$scoreAll,$btnLoadCsv,$btnTpl,$csvFile,$aiPrompt].some(n=>!n)){ console.error('DOM要素不足'); return; }
+
+  // 同一フォルダの problems_unified.tsv を試し読み（失敗したら既定データ）
+  tryFetchText('problems_unified.tsv')
+    .then(txt=>{ if(isUnifiedTsv(txt)){ const parsed=parseUnifiedTsv(txt); if(parsed&&parsed.length){ PROBLEMS=parsed; rebuildSelect(); } } })
+    .catch(()=>{ /* 既定データのまま */ })
+    .finally(()=>{ setupUI(); load(0); });
+}
+
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',init); else init();
+
+/********** 統合TSV 関連 **********/
+async function tryFetchText(path){ const res=await fetch(path,{cache:'no-store'}); if(!res.ok) throw new Error('not ok'); return await res.text(); }
+
+function tsvToRows(text){
+  if(!text) return [];
+  text = text.replace(/^\uFEFF/, '');
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').filter(s=>s.trim().length>0);
+  return lines.map(line => line.split('\t'));
+}
+
+function isUnifiedTsv(text){
+  const rows = tsvToRows(text);
+  if(!rows.length) return false;
+  return rows.some(r => (r[1]||'').trim().toLowerCase()==='p') ||
+         rows.some(r => /^\d+$/.test((r[1]||'').trim()) && /^(d|c|借|貸)$/i.test((r[2]||'').trim()));
+}
+
+function parseUnifiedTsv(text){
+  const rows = tsvToRows(text);
+  const map = new Map(); // id -> {id,text,lines:[]}
+  const normSide=(s)=>{ const t=(s||'').trim().toLowerCase(); if(t==='d'||t==='借') return 'D'; if(t==='c'||t==='貸') return 'C'; return ''; };
+
+  for(const r of rows){
+    const id=(r[0]||'').trim(); if(!id) continue;
+    const tagOrOrder=(r[1]||'').trim();
+
+    // 問題行: id, p, p, text
+    if(tagOrOrder.toLowerCase()==='p'){
+      const textCol=(r[3]||'').trim();
+      if(!map.has(id)) map.set(id,{id,text:'',lines:[]});
+      if(textCol && !map.get(id).text) map.get(id).text=textCol; // 最初の1件を採用
+      continue;
+    }
+
+    // 明細行: id, order, side, acc, amt
+    const order=Number(tagOrOrder);
+    const side=normSide(r[2]);
+    const acc=(r[3]||'').trim();
+    const amt=Number(String(r[4]||'').replace(/[,，]/g,''));
+    if(!order || !side || !acc || !amt) continue;
+    if(!map.has(id)) map.set(id,{id,text:'',lines:[]});
+    map.get(id).lines.push({order,side,acc,amt});
+  }
+
+  const out=[];
+  for(const v of map.values()){
+    v.lines.sort((a,b)=> (a.order||0)-(b.order||0));
+    if(v.id && v.text && v.lines.length){ out.push({ id:v.id, text:v.text, lines: v.lines.map(({side,acc,amt})=>({side,acc,amt})) }); }
+  }
+  return out;
+}
+
+function unifiedTsvTemplate(){
+  return [
+    'J2-1001\tp\tp\t仕入1,000円を当座預金300円支払い、残りは買掛金とした。',
+    'J2-1001\t1\td\t仕入\t1000',
+    'J2-1001\t2\tc\t当座預金\t300',
+    'J2-1001\t3\tc\t買掛金\t700',
+    '',
+    'J2-1002\tp\tp\t売掛金500円を現金で回収した。',
+    'J2-1002\t1\td\t現金\t500',
+    'J2-1002\t2\tc\t売掛金\t500'
+  ].join('\n');
+}
+</script>
+</body>
+</html>
